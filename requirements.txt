@@ -1,0 +1,29 @@
+# Core LangChain packages
+langchain>=0.1.0
+langchain-community>=0.0.20
+langchain-core>=0.1.0
+langchain-openai>=0.0.5
+langchain-text-splitters>=0.0.1
+
+# Vector store
+faiss-gpu
+
+# PDF processing
+pdfplumber>=0.10.0
+PyPDF2>=3.0.0
+
+# OpenAI API
+openai>=1.0.0
+
+# Utilities
+python-dotenv>=1.0.0
+tiktoken>=0.5.0
+
+# Jupyter support (optional)
+jupyter>=1.0.0
+ipykernel>=6.0.0
+
+# Development tools (optional)
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0 
