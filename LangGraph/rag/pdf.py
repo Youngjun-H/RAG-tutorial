@@ -9,11 +9,10 @@ from .base import RetrievalChain
 
 class PDFRetrievalChain(RetrievalChain):
     def __init__(self, source_uri: Annotated[str, "Source URI"]):
-        super().__init__()
         self.source_uri = source_uri
         self.k = 10
 
-    def load_documents(self, source_uris):
+    def load_documents(self, source_uris: List[str]):
         docs = []
         for source_uri in source_uris:
             loader = PDFPlumberLoader(source_uri)
