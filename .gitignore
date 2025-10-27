@@ -1,2 +1,7 @@
 pycache/
 .env
+*.json
+*.txt
+*.toml
+*.lock
+*.python-version
