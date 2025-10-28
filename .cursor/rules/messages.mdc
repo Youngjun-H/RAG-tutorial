@@ -1,0 +1,293 @@
+---
+alwaysApply: true
+---
+
+# LangChain Messages Cursor Rule  
+version: 1.0  
+author: system@ai-ops  
+created: 2025-10-27  
+description: >
+  Defines the structured protocol for LangChain message management
+  including System, Human, AI, and Tool messages with multimodal and metadata handling.
+  This Cursor Rule ensures consistent, context-aware, and provider-agnostic message flow
+  for all LangChain-based chatbot interactions.
+
+---
+
+## 🔹 1. PURPOSE
+All message exchanges between users, tools, and AI models must adhere to
+the structured LangChain Message format:
+```
+
+Role + Content + Metadata
+
+````
+The goal is to maintain deterministic, explainable, and reproducible conversational state.
+
+---
+
+## 🔹 2. MESSAGE CORE STRUCTURE
+Every message object MUST include the following three fields:
+
+```json
+{
+  "role": "<system|user|assistant|tool>",
+  "content": [...],
+  "metadata": {...}
+}
+````
+
+| Field        | Description                                           | Example                                       |
+| ------------ | ----------------------------------------------------- | --------------------------------------------- |
+| **role**     | Message actor (`system`, `user`, `assistant`, `tool`) | `"role": "user"`                              |
+| **content**  | Primary payload (text, image, audio, file...)         | `"content": [{"type": "text", "text": "안녕"}]` |
+| **metadata** | Optional contextual info                              | `"metadata": {"id": "msg_123", "tokens": 42}` |
+
+---
+
+## 🔹 3. MESSAGE TYPES
+
+### 🧠 SystemMessage
+
+Defines global role, tone, and behavioral rules of the assistant.
+
+**Guidelines:**
+
+* Appears once per session (top of conversation)
+* Must describe role, persona, reasoning style
+* Avoid ambiguity; include language, depth, and style directives
+
+**Example:**
+
+```python
+SystemMessage("""
+You are a senior Python engineer.
+Always explain reasoning before giving code.
+Be concise but accurate.
+""")
+```
+
+---
+
+### 👤 HumanMessage
+
+Represents user intent or query. May include multimodal content.
+
+**Guidelines:**
+
+* Accepts plain text, base64, URLs, or file IDs
+* `metadata` may include timestamps, name, or session tags
+* Must represent end-user inputs (no auto-generated content)
+
+**Example:**
+
+```python
+HumanMessage(
+  content_blocks=[
+    {"type": "text", "text": "이 이미지를 설명해줘"},
+    {"type": "image", "url": "https://example.com/cat.jpg"}
+  ],
+  metadata={"timestamp": "2025-10-27T10:31Z"}
+)
+```
+
+---
+
+### 🤖 AIMessage
+
+Represents model-generated output, tool calls, or reasoning traces.
+
+**Guidelines:**
+
+* Always include `usage_metadata` (token counts)
+* May contain `tool_calls` and `response_metadata`
+* Must maintain reasoning trace before final output
+
+**Example:**
+
+```python
+AIMessage(
+  content_blocks=[
+    {"type": "reasoning", "reasoning": "사진에는 고양이가 보입니다."},
+    {"type": "text", "text": "회색 털과 초록 눈을 가진 고양이입니다."}
+  ],
+  usage_metadata={"input_tokens": 12, "output_tokens": 58}
+)
+```
+
+---
+
+### 🧩 ToolMessage
+
+Carries results of executed tool calls back to the model.
+
+**Guidelines:**
+
+* Must reference the corresponding `tool_call_id`
+* `artifact` can store non-contextual metadata
+* Content should be stringified tool result
+
+**Example:**
+
+```python
+ToolMessage(
+  content="Sunny, 22°C",
+  tool_call_id="call_123",
+  name="get_weather",
+  artifact={"source": "OpenWeatherAPI"}
+)
+```
+
+---
+
+## 🔹 4. CONTENT BLOCK RULES
+
+### Core Types
+
+| Type                 | Fields                             | Description                  |
+| -------------------- | ---------------------------------- | ---------------------------- |
+| `text`               | `text`                             | Plain text message           |
+| `reasoning`          | `reasoning`, `extras`              | Internal reasoning traces    |
+| `image`              | `url` or `base64`, `mime_type`     | Image content                |
+| `audio`              | `base64`, `mime_type`              | Audio content                |
+| `video`              | `file_id`, `mime_type`             | Video content                |
+| `file`               | `url` or `base64`, `mime_type`     | PDF or document              |
+| `tool_call`          | `name`, `args`, `id`               | Tool invocation              |
+| `server_tool_result` | `tool_call_id`, `status`, `output` | Server-side execution result |
+
+### Multimodal Compliance
+
+Each multimodal block **MUST** include explicit MIME type.
+
+**Examples:**
+
+```json
+{"type": "image", "base64": "AAAA...", "mime_type": "image/png"}
+{"type": "audio", "url": "https://...", "mime_type": "audio/wav"}
+```
+
+---
+
+## 🔹 5. METADATA RULES
+
+| Field               | Required | Description                      |
+| ------------------- | -------- | -------------------------------- |
+| `id`                | ✅        | Unique message identifier        |
+| `timestamp`         | ✅        | ISO 8601 UTC time                |
+| `usage_metadata`    | Optional | Token statistics for AI messages |
+| `response_metadata` | Optional | Provider response info           |
+| `artifact`          | Optional | Private tool or trace data       |
+
+**Constraints:**
+
+* `AIMessage` must include `usage_metadata`
+* `HumanMessage` must include `timestamp`
+* `SystemMessage` may include `version` or `persona_id`
+
+---
+
+## 🔹 6. STREAMING RULES
+
+**AIMessageChunk Behavior:**
+
+* Must share identical `id` or sequential `index`
+* Must be additive; final message equals cumulative merge
+* Merge order preserved by index value
+
+**Example:**
+
+```python
+for chunk in model.stream("Hi"):
+    full_message = chunk if not full_message else full_message + chunk
+```
+
+---
+
+## 🔹 7. TOOL CALLING PROTOCOL
+
+| Step | Description                                                        |
+| ---- | ------------------------------------------------------------------ |
+| 1️⃣  | Model outputs AIMessage containing `tool_calls`                    |
+| 2️⃣  | Tool executes and returns ToolMessage with matching `tool_call_id` |
+| 3️⃣  | AI receives result and generates next step or summary              |
+
+**Rule Enforcement:**
+
+* Tool calls must be fully serialized JSON objects
+* Partial chunks use `"type": "tool_call_chunk"`
+* Invalid tool calls must generate `"invalid_tool_call"` with error details
+
+---
+
+## 🔹 8. PROMPT ENGINEERING PRINCIPLES
+
+| Goal                      | Rule                                    | Implementation                                  |
+| ------------------------- | --------------------------------------- | ----------------------------------------------- |
+| Behavioral control        | SystemMessage defines persona and style | e.g., “You are a precise data scientist.”       |
+| Context retention         | Use message list append strategy        | Maintain history with explicit AIMessage insert |
+| Response refinement       | Follow ToolMessage with system reminder | e.g., “Reflect and summarize retrieved data.”   |
+| Context window management | Summarize or trim messages periodically | Use Memory chain or token-based filters         |
+| Evaluation consistency    | Log token usage for every output        | via `usage_metadata`                            |
+
+---
+
+## 🔹 9. CONVERSATION TEMPLATE EXAMPLE
+
+```python
+messages = [
+  SystemMessage("""
+  You are a multimodal assistant capable of reasoning and explanation.
+  Always describe your reasoning process before producing an answer.
+  """),
+  HumanMessage(content_blocks=[
+    {"type": "text", "text": "이 이미지를 설명해줘."},
+    {"type": "image", "url": "https://example.com/cat.jpg"}
+  ]),
+  AIMessage(content_blocks=[
+    {"type": "reasoning", "reasoning": "사진에는 고양이가 보입니다."},
+    {"type": "text", "text": "이 고양이는 회색 털과 초록 눈을 가지고 있습니다."}
+  ],
+  usage_metadata={"input_tokens": 20, "output_tokens": 58})
+]
+```
+
+---
+
+## 🔹 10. CURSOR ENFORCEMENT SUMMARY
+
+| ID  | Rule                                                | Enforcement                         |
+| --- | --------------------------------------------------- | ----------------------------------- |
+| R1  | Every message has `role`, `content`, and `metadata` | Validation required                 |
+| R2  | SystemMessage appears once, top-level only          | Hard constraint                     |
+| R3  | HumanMessage represents end-user only               | Must not be auto-generated          |
+| R4  | AIMessage always carries `usage_metadata`           | Required                            |
+| R5  | Multimodal inputs require MIME type                 | Required                            |
+| R6  | Streaming chunks must merge by ID                   | Ordered composition                 |
+| R7  | Tool call sequence strictly ordered                 | Enforce tool_call_id consistency    |
+| R8  | Metadata not injected into model input              | Application-only use                |
+| R9  | Use `content_blocks` for provider-agnostic safety   | Preferred                           |
+| R10 | Prompt design centralized in SystemMessage          | Required for deterministic behavior |
+
+---
+
+## 🔹 11. VERSIONING
+
+* `LC_OUTPUT_VERSION = "v1"` MUST be set for standardized output
+* Chat model initialization example:
+
+```python
+init_chat_model("openai:gpt-5-nano", output_version="v1")
+```
+
+---
+
+## 🔹 12. COMPLIANCE NOTE
+
+This Cursor Rule conforms to:
+
+* LangChain v1+ message protocol
+* MCP (Model Context Protocol)
+* OpenAI Chat Completions format
+* Deterministic prompt behavior patterns
+
+---

@@ -1,0 +1,389 @@
+---
+alwaysApply: true
+---
+
+# LangChain Structured Output Cursor Rule
+version: 1.0
+author: system@ai-ops
+created: 2025-10-27
+description: >
+  Defines rules and best practices for handling structured output in LangChain agents.
+  Enforces deterministic schema-based responses using ProviderStrategy or ToolStrategy,
+  with full support for Pydantic, Dataclass, TypedDict, and JSON Schema formats.
+  Includes error-handling logic, custom tool message content, and schema validation
+  protocols for robust AI-agent integration.
+
+---
+
+## 🔹 1. PURPOSE
+
+Structured output ensures that AI agents produce **machine-usable data** rather than natural language.
+It provides predictable, schema-validated responses (JSON / Pydantic / Dataclass / TypedDict),
+automatically handled by `create_agent()` in LangChain.
+
+> All structured outputs must appear under the key:  
+> `"structured_response"` in the agent’s final state.
+
+---
+
+## 🔹 2. STRUCTURED OUTPUT ENTRYPOINT
+
+Agents must be instantiated via:
+
+```python
+from langchain.agents import create_agent
+
+agent = create_agent(
+    model="openai:gpt-5",
+    tools=tools,
+    response_format=MySchema  # or ToolStrategy(MySchema)
+)
+````
+
+The `response_format` parameter defines how structured output is generated.
+
+### Allowed types:
+
+| Type                        | Description                                     |
+| --------------------------- | ----------------------------------------------- |
+| `ToolStrategy[SchemaT]`     | Forces tool-calling mechanism for schema output |
+| `ProviderStrategy[SchemaT]` | Uses provider-native structured output          |
+| `type[SchemaT]`             | Automatically selects best strategy             |
+| `None`                      | Disables structured output                      |
+
+**Cursor Enforcement:**
+
+* Always define `response_format`.
+* Schema-less outputs are discouraged.
+* Schema types must be explicit (Pydantic / Dataclass / TypedDict / JSON Schema).
+
+---
+
+## 🔹 3. STRATEGY SELECTION LOGIC
+
+| Model Capability                                 | Strategy           | Behavior                            |
+| ------------------------------------------------ | ------------------ | ----------------------------------- |
+| Supports native structured output (OpenAI, Grok) | `ProviderStrategy` | Uses provider schema validation     |
+| Doesn’t support structured output                | `ToolStrategy`     | Uses internal tool-calling fallback |
+
+LangChain auto-selects the strategy when only a schema is provided.
+
+---
+
+## 🔹 4. PROVIDER STRATEGY RULES
+
+### Definition
+
+```python
+class ProviderStrategy(Generic[SchemaT]):
+    schema: type[SchemaT]
+```
+
+### Supported Schema Types
+
+* `Pydantic BaseModel`
+* Python `dataclass`
+* `TypedDict`
+* `JSON Schema` (dict)
+
+### Example
+
+```python
+from pydantic import BaseModel, Field
+from langchain.agents import create_agent
+
+class ContactInfo(BaseModel):
+    name: str = Field(description="Person's name")
+    email: str
+    phone: str
+
+agent = create_agent(
+    model="openai:gpt-5",
+    tools=tools,
+    response_format=ContactInfo  # Auto ProviderStrategy
+)
+```
+
+**Result:**
+
+```python
+result["structured_response"]
+# ContactInfo(name="John Doe", email="john@example.com", phone="(555) 123-4567")
+```
+
+**Cursor Enforcement:**
+
+* ProviderStrategy is preferred when provider supports structured APIs.
+* Provider validation errors must be surfaced to the agent.
+* Schema definitions must include descriptions for each field.
+
+---
+
+## 🔹 5. TOOL STRATEGY RULES
+
+### Definition
+
+```python
+class ToolStrategy(Generic[SchemaT]):
+    schema: type[SchemaT]
+    tool_message_content: str | None
+    handle_errors: bool | str | type[Exception] | tuple | Callable[[Exception], str]
+```
+
+### Supported Schemas
+
+* Pydantic `BaseModel`
+* Python `dataclass`
+* `TypedDict`
+* JSON Schema (dict)
+* Union of schema types (contextual fallback)
+
+### Example (Pydantic)
+
+```python
+from pydantic import BaseModel, Field
+from langchain.agents import create_agent
+from langchain.agents.structured_output import ToolStrategy
+
+class ProductReview(BaseModel):
+    rating: int = Field(ge=1, le=5)
+    sentiment: str
+    key_points: list[str]
+
+agent = create_agent(
+    model="openai:gpt-5",
+    tools=tools,
+    response_format=ToolStrategy(ProductReview)
+)
+```
+
+**Result:**
+
+```python
+result["structured_response"]
+# ProductReview(rating=5, sentiment="positive", key_points=["fast shipping"])
+```
+
+### Union Schema Example
+
+```python
+ToolStrategy(Union[ProductReview, CustomerComplaint])
+```
+
+Model will infer the appropriate schema from context.
+
+**Cursor Enforcement:**
+
+* Every tool call must reference exactly one schema per message.
+* Tool-based structured responses must serialize to valid JSON.
+* ToolMessage must include `tool_call_id` and human-readable summary.
+
+---
+
+## 🔹 6. CUSTOM TOOL MESSAGE CONTENT
+
+### Definition
+
+```python
+ToolStrategy(
+    schema=MeetingAction,
+    tool_message_content="Action item captured and logged."
+)
+```
+
+### Behavior
+
+Overrides the tool’s response text shown in conversation history.
+
+**Cursor Enforcement:**
+
+* `tool_message_content` must be concise and relevant.
+* Fallback message (default): `"Returning structured response: {...}"`.
+* ToolMessage display must include schema name and formatted output.
+
+---
+
+## 🔹 7. ERROR HANDLING RULES
+
+### Parameter: `handle_errors`
+
+Controls how LangChain retries after structured output validation errors.
+
+| Value                        | Behavior                                   |
+| ---------------------------- | ------------------------------------------ |
+| `True`                       | Default retry with standard error template |
+| `str`                        | Retry with custom message                  |
+| `Exception type`             | Retry only for specific error class        |
+| `tuple`                      | Retry for multiple exception types         |
+| `Callable[[Exception], str]` | Use custom error handler                   |
+| `False`                      | Disable retry; raise exception directly    |
+
+### Example: Custom Error Message
+
+```python
+ToolStrategy(
+    schema=ProductRating,
+    handle_errors="Please provide a rating between 1 and 5."
+)
+```
+
+**Generated ToolMessage:**
+
+```
+Error: Please provide a rating between 1 and 5.
+```
+
+### Example: Custom Exception Handler
+
+```python
+def handle_error(e: Exception) -> str:
+    if isinstance(e, StructuredOutputValidationError):
+        return "Schema mismatch. Try again."
+    if isinstance(e, MultipleStructuredOutputsError):
+        return "Too many structured responses. Pick one."
+    return f"Error: {e}"
+
+ToolStrategy(schema=ProductReview, handle_errors=handle_error)
+```
+
+**Cursor Enforcement:**
+
+* Retries must not exceed 3 attempts.
+* Validation errors must display both field and type details.
+* Error messages must always name the affected schema/tool.
+
+---
+
+## 🔹 8. ERROR SCENARIO RULES
+
+### A. Multiple Structured Outputs Error
+
+If model emits multiple tool calls instead of one:
+
+**Required ToolMessage format:**
+
+```
+Error: Model incorrectly returned multiple structured responses (A, B). Please fix.
+```
+
+### B. Schema Validation Error
+
+Example (invalid rating 10):
+
+```
+Error: Failed to parse structured output for 'ProductRating': rating must be ≤ 5.
+```
+
+**Cursor Enforcement:**
+
+* Agent must retry once with clarified instruction.
+* Schema correction loop ends after valid structured output is parsed.
+
+---
+
+## 🔹 9. RESPONSE STORAGE CONVENTIONS
+
+* Final structured result is stored in:
+
+  ```python
+  agent_state["structured_response"]
+  ```
+* Must always contain **parsed** Python object (BaseModel, dict, etc.).
+* When `include_raw=True`, agent must include both parsed and raw AI message:
+
+  ```python
+  {"parsed": obj, "raw": AIMessage, "parsing_error": None}
+  ```
+
+**Cursor Enforcement:**
+
+* `structured_response` key required in final state.
+* `parsing_error` key must exist if schema validation fails.
+* Each `AIMessage` must retain `usage_metadata` tokens.
+
+---
+
+## 🔹 10. VALIDATION AND RETRY LOOP PROTOCOL
+
+**Step Sequence:**
+
+1. Model emits tool call with schema args.
+2. Agent attempts to parse response into schema.
+3. On failure → generate ToolMessage(error).
+4. Retry with corrected schema once.
+5. Store valid structured response in final state.
+
+**Cursor Enforcement:**
+
+* Step 3 message must include explicit schema name.
+* Max retries: 3 (default).
+* If still invalid → raise `StructuredOutputValidationError`.
+
+---
+
+## 🔹 11. PROVIDER FALLBACK HIERARCHY
+
+When a provider does not support native structured output:
+
+| Priority | Strategy         | Fallback                          |
+| -------- | ---------------- | --------------------------------- |
+| 1️⃣      | ProviderStrategy | Provider-level schema enforcement |
+| 2️⃣      | ToolStrategy     | Tool call–based schema            |
+| 3️⃣      | Raw text         | Only if `response_format=None`    |
+
+**Cursor Enforcement:**
+
+* Provider fallback must be automatic.
+* Error logs must indicate the fallback level used.
+
+---
+
+## 🔹 12. STRUCTURED OUTPUT LOGGING FORMAT
+
+All structured output operations must log the following:
+
+```json
+{
+  "timestamp": "2025-10-27T12:00Z",
+  "agent_id": "agent_123",
+  "strategy": "ToolStrategy",
+  "schema": "ProductReview",
+  "attempts": 2,
+  "status": "success",
+  "errors": []
+}
+```
+
+**Cursor Enforcement:**
+
+* Logs must record both strategy type and schema name.
+* Include retry count and validation outcome.
+
+---
+
+## 🔹 13. CURSOR ENFORCEMENT SUMMARY
+
+| ID  | Rule                                                  | Enforcement |
+| --- | ----------------------------------------------------- | ----------- |
+| S1  | All agents must define `response_format`              | Required    |
+| S2  | ProviderStrategy preferred when available             | Enforced    |
+| S3  | ToolStrategy fallback when provider unsupported       | Required    |
+| S4  | Structured outputs stored under `structured_response` | Required    |
+| S5  | Schema validation errors trigger auto retry           | Enforced    |
+| S6  | `handle_errors` parameter governs retry logic         | Required    |
+| S7  | All ToolMessages must name schema and call_id         | Enforced    |
+| S8  | Error messages must include cause + field             | Required    |
+| S9  | Logs must include schema, strategy, attempts          | Enforced    |
+| S10 | Custom tool messages allowed but concise              | Recommended |
+
+---
+
+## 🔹 14. VERSION CONTROL
+
+For deterministic schema serialization:
+
+```python
+create_agent(..., response_format=ToolStrategy(MySchema), output_version="v1")
+```
+
+---

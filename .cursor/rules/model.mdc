@@ -1,0 +1,455 @@
+---
+alwaysApply: true
+---
+
+# LangChain Model Cursor Rule  
+version: 1.0  
+author: system@ai-ops  
+created: 2025-10-27  
+description: >
+  Standardized rule set defining the usage, initialization, invocation,
+  and configuration of LangChain models including LLMs, tool-calling,
+  structured outputs, multimodality, and runtime configuration.
+  Ensures provider-agnostic, deterministic model behavior within
+  Cursor or MCP-based AI development environments.
+
+---
+
+## 🔹 1. PURPOSE
+This rule defines how **LangChain models** (LLMs, chat models, reasoning engines)  
+should be **initialized, invoked, streamed, and managed** in a consistent, reproducible manner.
+
+> A "Model" in LangChain is the reasoning engine driving agents.  
+> It interprets, generates, and reasons about data across modalities.
+
+---
+
+## 🔹 2. MODEL FUNDAMENTALS
+
+| Capability | Description |
+|-------------|--------------|
+| **Tool Calling** | Ability to call external functions or APIs dynamically. |
+| **Structured Output** | Enforces schema-based responses for predictable parsing. |
+| **Multimodality** | Supports text, image, audio, and video inputs/outputs. |
+| **Reasoning** | Performs multi-step reasoning to reach logical conclusions. |
+
+**Cursor Enforcement:**  
+- Always declare model capability upfront.  
+- Structured outputs and reasoning must be explicitly requested.  
+- Tool calls must follow deterministic loop pattern (invoke → execute → return).
+
+---
+
+## 🔹 3. MODEL INITIALIZATION
+
+### Method 1: `init_chat_model`
+```python
+from langchain.chat_models import init_chat_model
+model = init_chat_model("openai:gpt-4.1", temperature=0.7, max_tokens=1000)
+````
+
+### Method 2: Direct Class Instantiation
+
+```python
+from langchain_openai import ChatOpenAI
+model = ChatOpenAI(model="gpt-4.1")
+```
+
+### Supported Providers
+
+| Provider    | Example Model                 | Integration              |
+| ----------- | ----------------------------- | ------------------------ |
+| OpenAI      | `gpt-4o`, `gpt-4.1-mini`      | `langchain_openai`       |
+| Anthropic   | `claude-3.5-sonnet`           | `langchain_anthropic`    |
+| Google      | `gemini-2.5-flash`            | `langchain_google_genai` |
+| Azure       | `gpt-4.1` (Azure endpoint)    | `langchain_openai`       |
+| AWS Bedrock | `anthropic.claude-3-5-sonnet` | `langchain_aws`          |
+| Ollama      | Local models                  | `langchain_community`    |
+
+**Cursor Enforcement:**
+
+* Always store API keys in environment variables.
+* When using local inference, specify `base_url` and `model_provider`.
+* For reproducibility, document `model`, `provider`, and `version`.
+
+---
+
+## 🔹 4. MODEL PARAMETERS
+
+| Parameter     | Type  | Description                     |
+| ------------- | ----- | ------------------------------- |
+| `model`       | str   | Model name or identifier        |
+| `api_key`     | str   | Authentication key              |
+| `temperature` | float | Controls randomness             |
+| `timeout`     | int   | Max wait time in seconds        |
+| `max_tokens`  | int   | Output token cap                |
+| `max_retries` | int   | Retry attempts for failed calls |
+
+### Example:
+
+```python
+model = init_chat_model(
+    "anthropic:claude-sonnet-4-5",
+    temperature=0.7,
+    timeout=30,
+    max_tokens=800
+)
+```
+
+---
+
+## 🔹 5. INVOCATION MODES
+
+### (A) Invoke — Single or multi-turn
+
+```python
+response = model.invoke("Why do parrots talk?")
+```
+
+**Conversation form:**
+
+```python
+conversation = [
+  {"role": "system", "content": "You are a helpful translator."},
+  {"role": "user", "content": "Translate: I love programming."}
+]
+response = model.invoke(conversation)
+```
+
+### (B) Stream — Real-time generation
+
+```python
+for chunk in model.stream("Explain gravity."):
+    print(chunk.text, end="", flush=True)
+```
+
+* Streams `AIMessageChunk` objects.
+* Combine chunks to reconstruct the final `AIMessage`:
+
+  ```python
+  full = None
+  for chunk in model.stream("Hi"):
+      full = chunk if not full else full + chunk
+  ```
+
+### (C) Batch — Parallel calls
+
+```python
+responses = model.batch([
+    "What is AI?",
+    "Define machine learning.",
+    "Explain neural networks."
+])
+```
+
+**Cursor Enforcement:**
+
+* Always merge streamed chunks by index or ID.
+* Maintain consistent token tracking across invocations.
+* Batch responses must maintain order unless `batch_as_completed()` is used.
+
+---
+
+## 🔹 6. TOOL CALLING PROTOCOL
+
+Models can request **external function execution** through “tool calls”.
+
+### Definition
+
+```python
+from langchain.tools import tool
+
+@tool
+def get_weather(location: str) -> str:
+    return f"It's sunny in {location}."
+```
+
+### Binding
+
+```python
+model_with_tools = model.bind_tools([get_weather])
+response = model_with_tools.invoke("What's the weather in Paris?")
+```
+
+### Execution Loop
+
+```python
+ai_msg = model_with_tools.invoke("Weather in Tokyo?")
+for tool_call in ai_msg.tool_calls:
+    result = get_weather.invoke(tool_call)
+    messages = [ai_msg, result]
+final_response = model_with_tools.invoke(messages)
+```
+
+### Tool Calling Variants
+
+| Type                     | Description                               |
+| ------------------------ | ----------------------------------------- |
+| **Parallel Calls**       | Execute multiple tools concurrently       |
+| **Forced Tool**          | Use only specified tool via `tool_choice` |
+| **Streaming Tool Calls** | Build tool call incrementally via chunks  |
+
+**Cursor Enforcement:**
+
+* Tool call IDs must match between AIMessage and ToolMessage.
+* Tool outputs must be stringified.
+* Parallel execution is allowed only if tool independence is proven.
+
+---
+
+## 🔹 7. STRUCTURED OUTPUTS
+
+### Pydantic Schema Example
+
+```python
+from pydantic import BaseModel, Field
+
+class Movie(BaseModel):
+    title: str
+    year: int
+    rating: float
+
+structured_model = model.with_structured_output(Movie)
+response = structured_model.invoke("Describe Inception")
+```
+
+### JSON Schema Example
+
+```python
+json_schema = {
+    "title": "Movie",
+    "type": "object",
+    "properties": {"title": {"type": "string"}}
+}
+model.with_structured_output(json_schema, method="json_schema")
+```
+
+### Rules
+
+* `with_structured_output()` must define a single schema.
+* Use `include_raw=True` to access both parsed and raw `AIMessage`.
+* Prefer Pydantic for validation; JSON Schema for cross-language APIs.
+
+**Cursor Enforcement:**
+
+* Schema validation errors must be logged as `parsing_error`.
+* Structured response must serialize to valid JSON.
+* Nested structures must preserve data typing hierarchy.
+
+---
+
+## 🔹 8. MULTIMODAL INPUTS & OUTPUTS
+
+### Input Example
+
+```python
+message = {
+  "role": "user",
+  "content": [
+    {"type": "text", "text": "Describe this image"},
+    {"type": "image", "url": "https://example.com/dog.jpg"}
+  ]
+}
+response = model.invoke([message])
+```
+
+### Output Example
+
+```python
+response.content_blocks
+# [
+#   {"type": "text", "text": "Here's a dog"},
+#   {"type": "image", "base64": "...", "mime_type": "image/jpeg"}
+# ]
+```
+
+**Cursor Enforcement:**
+
+* Every multimodal block requires explicit `mime_type`.
+* `AIMessage` outputs must include `content_blocks` rather than raw JSON.
+* Image, audio, video, and file data must follow LangChain standard content schema.
+
+---
+
+## 🔹 9. REASONING MODE
+
+Models that support multi-step reasoning should emit `reasoning` content blocks.
+
+### Example
+
+```python
+response = model.invoke("Why do parrots have colorful feathers?")
+for block in response.content_blocks:
+    if block["type"] == "reasoning":
+        print(block["reasoning"])
+```
+
+**Cursor Enforcement:**
+
+* All reasoning must be self-contained in `reasoning` blocks.
+* Reasoning tokens should be counted under `usage_metadata.output_token_details["reasoning"]`.
+* Enable reasoning trace inspection via `response.content_blocks`.
+
+---
+
+## 🔹 10. PROMPT CACHING
+
+Two modes:
+
+| Type     | Example Providers      | Notes                                 |
+| -------- | ---------------------- | ------------------------------------- |
+| Implicit | OpenAI, Gemini         | Automatic reuse for identical prompts |
+| Explicit | Anthropic, AWS Bedrock | Controlled via cache keys             |
+
+**Cursor Enforcement:**
+
+* Always tag prompts with stable cache keys if deterministic reuse is required.
+* Cache metadata appears under `response.usage_metadata`.
+
+---
+
+## 🔹 11. RATE LIMITING
+
+```python
+from langchain_core.rate_limiters import InMemoryRateLimiter
+rate_limiter = InMemoryRateLimiter(requests_per_second=0.2)
+model = init_chat_model("openai:gpt-5", rate_limiter=rate_limiter)
+```
+
+**Cursor Enforcement:**
+
+* Apply rate limiter for concurrent agent operations.
+* Do not rely on provider error handling alone.
+
+---
+
+## 🔹 12. CONFIGURATION MANAGEMENT
+
+All invocations may include a `config` parameter (RunnableConfig).
+
+```python
+response = model.invoke(
+  "Tell me a joke",
+  config={
+    "run_name": "joke_gen",
+    "tags": ["demo"],
+    "metadata": {"user_id": "u123"}
+  }
+)
+```
+
+### Configurable Models
+
+```python
+configurable_model = init_chat_model(temperature=0)
+configurable_model.invoke(
+  "test",
+  config={"configurable": {"model": "gpt-4.1-mini"}}
+)
+```
+
+**Cursor Enforcement:**
+
+* Configurable fields: `model`, `model_provider`, `temperature`, `max_tokens`.
+* Prefixes may be used for multi-model chains (`config_prefix="first"`).
+* Recursive limits must be defined to prevent infinite loops.
+
+---
+
+## 🔹 13. LOG PROBABILITIES & TOKEN USAGE
+
+### Logprobs
+
+```python
+model = init_chat_model("openai:gpt-4o").bind(logprobs=True)
+response = model.invoke("Hello")
+print(response.response_metadata["logprobs"])
+```
+
+### Token Tracking
+
+```python
+from langchain_core.callbacks import UsageMetadataCallbackHandler
+cb = UsageMetadataCallbackHandler()
+result = model.invoke("Hi", config={"callbacks": [cb]})
+print(cb.usage_metadata)
+```
+
+**Cursor Enforcement:**
+
+* All token statistics must propagate to callback-level.
+* Use consistent aggregation per provider key.
+
+---
+
+## 🔹 14. SERVER-SIDE TOOL EXECUTION
+
+Some models handle tool invocation internally:
+
+```python
+model = init_chat_model("openai:gpt-4.1-mini")
+response = model.invoke("Search positive news today")
+response.content_blocks
+```
+
+**Cursor Enforcement:**
+
+* Server-side tool calls use `"server_tool_call"` and `"server_tool_result"`.
+* No explicit ToolMessage exchange required.
+
+---
+
+## 🔹 15. BASE URL & PROXY CONFIGURATION
+
+### Base URL Example
+
+```python
+model = init_chat_model(
+  model="gpt-4o",
+  model_provider="openai",
+  base_url="https://api.proxy-provider.com"
+)
+```
+
+### Proxy Example
+
+```python
+from langchain_openai import ChatOpenAI
+model = ChatOpenAI(model="gpt-4o", openai_proxy="http://proxy.local:8080")
+```
+
+**Cursor Enforcement:**
+
+* Always isolate proxy credentials from runtime logs.
+* Base URLs must be provider-compatible (OpenAI schema standard).
+
+---
+
+## 🔹 16. CURSOR ENFORCEMENT SUMMARY
+
+| ID  | Rule                                                | Enforcement |
+| --- | --------------------------------------------------- | ----------- |
+| M1  | Models must declare provider and version            | Required    |
+| M2  | Tool calling must use deterministic loop            | Required    |
+| M3  | Structured output must validate schema              | Required    |
+| M4  | Streaming chunks merge sequentially                 | Enforced    |
+| M5  | Multimodal messages require MIME metadata           | Required    |
+| M6  | Token usage logged for every output                 | Enforced    |
+| M7  | Cache keys applied for deterministic reuse          | Recommended |
+| M8  | Configurable models must define configurable fields | Required    |
+| M9  | Base URL & proxy kept secure                        | Mandatory   |
+| M10 | Reasoning content blocks standardized               | Required    |
+
+---
+
+## 🔹 17. VERSION CONTROL
+
+All models in LangChain MUST define:
+
+```python
+init_chat_model(model="...", output_version="v1")
+```
+
+This ensures consistent serialization of messages and output formats.
+
+---
